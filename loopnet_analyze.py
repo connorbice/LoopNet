@@ -8,10 +8,6 @@ from cmd_util import *
 import sys
 import os
 
-def help():
-    print('plot_field_lines.py can (and should) be run with a number of options \n')
-    print('--help     Who fuckin knows when a code is this spaghetti?\n')
-    sys.exit(0)
 
 def rectifyPhis(phis): #phis are modulo 2pi when coming from the integrator, make them continuous
     if len(np.shape(phis)) == 1: 
@@ -23,17 +19,16 @@ def rectifyPhis(phis): #phis are modulo 2pi when coming from the integrator, mak
             if np.abs(phis[k,j]-phis[k,j-1])>5:
                 if phis[k,j] > phis[k,j-1]: phis[k,j:] += -2*np.pi
                 else: phis[k,j:] += 2*np.pi
-        #phis[k,:] = phis[k,:] - phis[k,0]
     if flatten: return phis[0,:]
     else: return phis
 
 # pairing_data is a list of lists of lists of structure indices [Niter-1][Nloop][Nmatch]
 # minvar is a fraction representing the minimum amount of variation a branch must meet to be considered distinct from previous branches
 # output is a list of lists of lists of arrays of structure indices [Niter-1][Nloop][Nbranch][Nidx]
-def build_loops_btf(pairing_data,minvar):
+def build_loops_btf(pairing_data,minvar,verbose=False):
     all_loops = [[[] for y in x] for x in pairing_data]
     for k in np.arange(len(pairing_data)-1,-1,-1):
-        print('  Working on timestep {:d}/{:d}'.format(k+1,len(pairing_data)))
+        if verbose: print('  Working on timestep {:d}/{:d}'.format(k+1,len(pairing_data)))
         for l in range(len(pairing_data[k])):
             if pairing_data[k][l] == []: all_loops[k][l].append([l]) #if this is a dead end, mark it
             else:
@@ -47,9 +42,8 @@ def build_loops_btf(pairing_data,minvar):
                             for m in range(len(all_loops[k][l])):
                                 if not reject: 
                                     reject = len(np.where(this_loop != all_loops[k][l][m])[0])/len(this_loop) < minvar #trash loops with less than minvar unique nodes
-                                    if reject: print('Rejecting loop ',this_loop,' for similarity to loop ',all_loops[k][l][m])
+                                    if reject and verbose: print('Rejecting loop ',this_loop,' for similarity to loop ',all_loops[k][l][m])
                             if not reject: all_loops[k][l].append(this_loop) #then add this loop to the main list
-       # print('Found these structures: \n',all_loops[k])
                             
         if k < len(pairing_data)-1: # if we are past the first iteration, go back and pop any loops that are part of the ones we just found
             for ln in range(len(all_loops[k+1])):
@@ -60,7 +54,6 @@ def build_loops_btf(pairing_data,minvar):
                         for loop in all_loops[k][l]:
                             if not captured: captured = loop[1:] == next_loop
                     if captured: all_loops[k+1][ln] = []  #remove entries for loops that are just continuations of earlier structures
-          #  print('Modified the previous entry to be:\n',all_loops[k+1])
 
     return all_loops
 
@@ -71,13 +64,11 @@ def plot_rise(fname,merged_structures,loop_paths,rstar,dt=1,contour=None,verbose
     plt.gca().tick_params(direction='in',top=True,right=True,which='both')
     for k in range(len(loop_paths)): #k is starting time index
         for j in range(len(loop_paths[k])): #j is starting structure index
-           # print('Instant {:d}, structure {:d} spawns {:d} branches with average length {:.1f}'.format(k,j,len(loop_paths[k][j]),np.mean([len(x) for x in loop_paths[k][j]])))
             for b in range(len(loop_paths[k][j])): #b is a branch index
                 times = np.arange(k,k+len(loop_paths[k][j][b]))*dt
                 rads = np.zeros(len(loop_paths[k][j][b]))
                 for t in range(len(loop_paths[k][j][b])): #t+k is a time index
                     loop_rads = merged_structures[k+t][loop_paths[k][j][b][t]][0][2,:]/rstar
-                       # rads[t] += loop_rads[int(len(loop_rads)/2)]/len(structures[k+t][loop_paths[k][j][b][t]])  #radius at midpoint
                     rads[t] = np.max(loop_rads)   #maximum radius
                 for t in [np.argmax(rads)]:
                     peakind = np.argmax(merged_structures[k+t][loop_paths[k][j][b][t]][0][2,:])
@@ -348,52 +339,5 @@ def prepContour(file_list, location, var, mode):
 
     return contour
 
-if __name__ == '__main__':   #xxx add command line controls for the contours
-    args = sys.argv
-    opts = getOpt(args[1:],['fname=','files=','datadir=','files=','rstar=','help','dt=','minvar='])
-    if 'help' in opts: help()
-    if 'files' in opts: file_list = [convertNumber(int(x)) for x in parseList(opts['files'])]
-    else:
-        print('Choose a file, you idiot')
-        file_list = [0]
-    if 'fname' in opts: fname_pref = opts['fname']
-    else: fname_pref = ''
-    if 'datadir' in opts: datadir = opts['datadir']
-    else: datadir = 'segmented_loops_v2/'
-    if 'rstar' in opts: rstar = float(opts['rstar'])
-    else: rstar = 2.588e10
-    if 'dt' in opts: dt = float(opts['dt'])
-    else: dt = 179. 
-    if 'minvar' in opts: minvar = float(opts['minvar']) #minimum variance. minimum fraction of nodes in a branch that must be different from previous branches for the branch to be kept
-    else: minvar = 0
-    DT = dt * (int(file_list[-1])-int(file_list[0]))/(len(file_list)-1) / (60*60*24)
-
-    print('Loading data...')
- #   loop_data = [np.load('{:s}{:s}loop_data_f{:s}.npy'.format(datadir,fname_pref,k),allow_pickle=True) for k in file_list]
- #   structures = [np.load('{:s}{:s}loop_structures_f{:s}.npy'.format(datadir,fname_pref,k),allow_pickle=True) for k in file_list]
- #   pairing_data = [np.load('{:s}{:s}loop_pairings_f{:s}_to_{:s}.npy'.format(datadir,fname_pref,file_list[k],file_list[k+1]),allow_pickle=True) for k in range(len(file_list)-1)]
-
-    merged_structures = [np.load('{:s}{:s}merged_loops_f{:s}.npy'.format(datadir,fname_pref,k),allow_pickle=True) for k in file_list]
-    pairing_data = [np.load('{:s}{:s}loop_pairings_f{:s}_to_{:s}.npy'.format(datadir,fname_pref,file_list[k],file_list[k+1]),allow_pickle=True) for k in range(len(file_list)-1)]
-    
-    print('Building evolution trees...')
-    loop_paths = build_loops_btf(pairing_data,minvar)
-    #print('Plotting time-radius...')
-    risers = plot_rise(fname_pref,merged_structures,loop_paths,rstar,DT)
-    #print('Calculating time-latitude contour')
-   # contourlat = None#prepContour(file_list, 0.8*rstar, 803, 'timelat')
-   # print('Plotting time-latitude of polarity')
-   # plot_latitude(fname_pref,merged_structures,loop_paths,dt=DT,minr=0.75*rstar,risers=risers,contour=contourlat)
-   # print('Plotting time-latitude of axis-tilt')
-   # plot_joyslaw(fname_pref,merged_structures,loop_paths,dt=DT,minr=0.75*rstar,risers=risers,contour=None)
-    #print('Calculating time-longitude contour')
-    contourlong = prepContour(file_list, 0.8*rstar, 1, 'timelongrms')
-    print('Plotting time-longitude of polarity')
-    plot_longitude('full_',merged_structures,loop_paths,dt=DT,minr=0.75*rstar,risers=None,contour=None,rotate=180)
-    plot_longitude('rising_',merged_structures,loop_paths,dt=DT,minr=0.75*rstar,risers=risers,contour=None,rotate=180)
-    plot_longitude('ctrising_',merged_structures,loop_paths,dt=DT,minr=0.75*rstar,risers=risers,contour=contourlong,rotate=180)
-    
-
-    print('Donion Rings :)')
     
 

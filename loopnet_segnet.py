@@ -29,10 +29,10 @@ class WNet(nn.Module):
         self.dconv2b = nn.Conv1d(32, 32, 3, padding=1, groups=32)
         self.dconv3a = nn.Conv1d(32, 64, 3, padding=1, groups=32)
         self.dconv3b = nn.Conv1d(64, 64, 3, padding=1, groups=64)
-        self.dtconv3 = nn.ConvTranspose1d(64, 32, 2, stride=2)#, output_padding=1)
+        self.dtconv3 = nn.ConvTranspose1d(64, 32, 2, stride=2)
         self.dconv2c = nn.Conv1d(64, 32, 3, padding=1, groups=32)
         self.dconv2d = nn.Conv1d(32, 32, 3, padding=1, groups=32)
-        self.dtconv2 = nn.ConvTranspose1d(32, 16, 2, stride=2)#, output_padding=1)
+        self.dtconv2 = nn.ConvTranspose1d(32, 16, 2, stride=2)
         self.dconv1c = nn.Conv1d(32, 16, 3, padding=1)
         self.dconv1d = nn.Conv1d(16, 16, 3, padding=1)
         self.dconv1e = nn.Conv1d(16, nvar, 1)
@@ -42,44 +42,33 @@ class WNet(nn.Module):
         self.smax = nn.Softmax(dim=1)
 
     def forward(self, x, ret = 'enc'): #not specifying ret will return only the encoded outputs. changing it (nominally to 'dec') will return the recreated image
-      #  print(x.size())
         ex1d = nnf.relu(self.econv1b(self.econv1a(self.drop(x))))
-      #  print(ex1d.size())
         ex2d = nnf.relu(self.econv2b(self.econv2a(self.drop(self.pool(ex1d)))))
-      #  print(ex2d.size())
         ex3 = nnf.relu(self.econv3b(self.econv3a(self.drop(self.pool(ex2d)))))
-      #  print(ex3.size())
         ex2u = nnf.relu(self.econv2d(self.econv2c(self.drop(torch.cat((self.etconv3(ex3),ex2d),1)))))
-      #  print(ex2u.size())
         ex1u = nnf.relu(self.econv1e(self.econv1d(self.econv1c(self.drop(torch.cat((self.etconv2(ex2u),ex1d),1))))))
-      #  print(ex1u.size())
         exfinal = self.smax(ex1u)
-      #  print(exfinal.size())
         if ret == 'enc': return exfinal
         else:
-       #     print(exfinal.size())
             dx1d = nnf.relu(self.dconv1b(self.dconv1a(self.drop(exfinal))))
-       #     print(dx1d.size())
             dx2d = nnf.relu(self.dconv2b(self.dconv2a(self.drop(self.pool(dx1d)))))
-       #     print(dx2d.size())
             dx3 = nnf.relu(self.dconv3b(self.dconv3a(self.drop(self.pool(dx2d)))))
-       #     print(dx3.size())
             dx2u = nnf.relu(self.dconv2d(self.dconv2c(self.drop(torch.cat((self.dtconv3(dx3),dx2d),1)))))
-       #     print(dx2u.size())
             dx1u = nnf.relu(self.dconv1e(self.dconv1d(self.dconv1c(self.drop(torch.cat((self.dtconv2(dx2u),dx1d),1))))))
-       #     print(dx1u.size())
             return dx1u
 
 def JsoftNcut(pix, K, weights):
+    nbatch = pix.size()[0]
+    nclass = pix.size()[1]
     npix = pix.size()[2]
 
-    numerator = (pix.view(K,npix)*torch.matmul(pix.view(K,npix),weights)).sum(dim=1)
-    denominator = torch.matmul(pix.view(K,npix),weights.sum(1))
-    loss = K - (numerator/(1e-8+denominator)).sum()
+    numerator = (pix.view(nbatch,nclass,npix)*torch.bmm(pix.view(nbatch,nclass,npix),weights.view(nbatch,npix,npix))).sum(dim=2)
+    denominator = torch.bmm(pix.view(nbatch,nclass,npix),weights.view(nbatch,npix,npix).sum(2).view(nbatch,npix,1))
+    loss = nclass*nbatch - (numerator.view(nbatch,nclass,1)/(1e-8+denominator)).sum()
     return loss
 
 def Jreconstruct(image,reimage):
-    return torch.pow(image-reimage,2).mean()
+    return torch.pow(image-reimage,2).mean()*image.size()[0]
 
 def rectifyPhis(phis): #phis are modulo 2pi when coming from the integrator, make them continuous
     for k in range(len(phis[:,0])):
@@ -142,12 +131,12 @@ def compileData(file_list,exclude = None,normalize = True,loops = None,verbose =
             lastidx += len(loops[k])
         return loopdata
 
+
 def compileAnswers(fname): #Assumes the answers are arranged column-wise, under filename headers, with indices in the leftmost column
     f = open(fname,'r')
     answers = np.array([s.split(',') for s in f.read().split('\n')])
     f.close()
     answers = answers[1:,:]
-    #numanswers = np.array([[x == c for c in ['n','a','b']] for x in answers.flatten('F')],dtype=np.float64)
     lastiter = ''
     loops = []
     numanswers = np.zeros((np.shape(answers)[0],20))

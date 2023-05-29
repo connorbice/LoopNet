@@ -5,49 +5,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as nnf
 import torch.optim as optim
-import loop_cnn_v4t as cnn
+import loopnet_idnet as cnn
 import multiprocessing as mp
 import time
 import random
-from cmd_util import *
+from loopnet_util import *
 import sys
-
-def trainCNN(data,answers,fname='./loop_net.pth'):
-    weights = np.array([1.0/len(np.where(answers==k)[0]) for k in [0,1]])#[0,1,2]])
-    weights[1] = 1.2 * weights[1] #Experimental -- Increase the weight of loop detections by 20%
-    weights = weights / np.sum(weights)
-    net = cnn.Net().float()
-    criterion = nn.CrossEntropyLoss(torch.from_numpy(weights).float()).float()
-    optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
-    for epoch in range(100):
-        running_loss = 0.0
-        for k in range(len(answers)):
-            optimizer.zero_grad()
-            outputs = net(torch.from_numpy(np.expand_dims(data[k,:,:],axis=0)).float())
-            loss = criterion(outputs,torch.tensor([answers[k]]).long())
-            loss.backward()
-            optimizer.step()
-            running_loss = running_loss + loss.item()
-            if k % 100 == 99:
-                print('  [{:d}, {:4d}] loss: {:.3f}'.format(epoch+1,k+1,running_loss/100))
-                running_loss = 0.0
-    print('Finished training')
-    torch.save(net.state_dict(),fname)
-
-def testCNN(testdata,testanswers,fname='./loop_net.pth'):
-    net = cnn.Net()
-    net.load_state_dict(torch.load(fname))
-    correct = np.zeros(2)#3)
-    incorrect = np.zeros(2)#3)
-    measures = np.zeros((1,6))
-    for k in range(len(testanswers)):
-        output = net(torch.from_numpy(np.expand_dims(testdata[k,:,:],axis=0)).float()).detach().numpy()
-        pred = np.argmax(output)
-        if testanswers[k] == pred: 
-            correct[pred] += 1.0
-        else: incorrect[pred] += 1.0
-        measures = np.append(measures,np.expand_dims(cnnStatistics(correct[1],incorrect[0],incorrect[1],correct[0]),axis=0),axis=0)
-    print('Model {:s} has statistics:\nACC={:.2f}\nPOD={:.2f}\nCSI={:.2f}\nFAR={:.2f}\nHSS={:.2f}\nTSS={:.2f}'.format(fname,measures[-1,0],measures[-1,1],measures[-1,2],measures[-1,3],measures[-1,4],measures[-1,5]))
 
 def convergingTraining(data,answers,testdata,testanswers,fname,lrn,mom,sensitivity):
     print('Starting training for model {:s}'.format(fname))
@@ -59,8 +22,6 @@ def convergingTraining(data,answers,testdata,testanswers,fname,lrn,mom,sensitivi
     optimizer = optim.SGD(net.parameters(), lr=lrn, momentum=mom)
     epoch = 0
     done = False
-    #cd_rate = np.ones((1,2))#3))
-    #fp_rate = np.ones((1,2))#3))
     measures = np.zeros((1,6))
     while not done:
         for k in range(len(answers)):
@@ -74,27 +35,19 @@ def convergingTraining(data,answers,testdata,testanswers,fname,lrn,mom,sensitivi
             correct = np.zeros(2)#3)
             incorrect = np.zeros(2)#3)
             totals = np.zeros(2)#3)
-            #labels = ['n','y']#,'a','b']
             for k in range(len(testanswers)):
                 output = net(torch.from_numpy(np.expand_dims(testdata[k,:,:],axis=0)).float()).detach().numpy()
                 pred = np.argmax(output)
                 if testanswers[k] == pred: 
                     correct[pred] += 1.0
                 else: incorrect[pred] += 1.0
-                #totals[int(testanswers[k])] += 1.0
             measures = np.append(measures,np.expand_dims(cnnStatistics(correct[1],incorrect[0],incorrect[1],correct[0]),axis=0),axis=0)
-            #cd_rate = np.append(cd_rate,np.expand_dims(correct/totals,axis=0),axis=0)
-            #fp_rate = np.append(fp_rate,np.expand_dims(incorrect/totals,axis=0),axis=0)
             
             converged = False
             if len(measures[:,0] >= 5):
                 converged = np.all(np.std(measures[-5:,:4],axis=0) < sensitivity)
-                #converged = np.all(np.std(cd_rate[-5:,:],axis=0) < sensitivity) #if the standard deviation of the last 5 CDs is less than sens for each class
-           # print('Model {:s} is on epoch {:d} with statistics:\nACC={:.2f}\nPOD={:.2f}\nCSI={:.2f}\nFAR={:.2f}\nHSS={:.2f}\nTSS={:.2f}'.format(fname,epoch+1,measures[-1,0],measures[-1,1],measures[-1,2],measures[-1,3],measures[-1,4],measures[-1,5]))
             if epoch>=1000 or converged: done = True
     print('Model {:s} has finished training after {:d} epochs. After convergence:\nACC={:.2f}\nPOD={:.2f}\nCSI={:.2f}\nFAR={:.2f}\nHSS={:.2f}\nTSS={:.2f}'.format(fname,epoch+1,measures[-1,0],measures[-1,1],measures[-1,2],measures[-1,3],measures[-1,4],measures[-1,5]))
-    #for k in range(len(labels)):
-    #    print('  Class {:s} detected with accuracy {:.0f}/{:.0f} ({:.1f}%) and misidentified {:.0f} times'.format(labels[k],correct[k],totals[k],correct[k]/totals[k]*100,incorrect[k]))
     torch.save(net.state_dict(),fname+'.pth')
 
 def finiteTraining(data,answers,testdata,testanswers,fname,Niters,lrn,mom):
@@ -107,8 +60,6 @@ def finiteTraining(data,answers,testdata,testanswers,fname,Niters,lrn,mom):
     optimizer = optim.SGD(net.parameters(), lr=lrn, momentum=mom)
     epoch = 0
     done = False
-    #cd_rate = np.ones((1,2))#3))
-    #fp_rate = np.ones((1,2))#3))
     measures = np.zeros((1,6))
     while not done:
         for k in range(len(answers)):
@@ -122,24 +73,16 @@ def finiteTraining(data,answers,testdata,testanswers,fname,Niters,lrn,mom):
             correct = np.zeros(2)#3)
             incorrect = np.zeros(2)#3)
             totals = np.zeros(2)#3)
-            #labels = ['n','y']#,'a','b']
             for k in range(len(testanswers)):
                 output = net(torch.from_numpy(np.expand_dims(testdata[k,:,:],axis=0)).float()).detach().numpy()
                 pred = np.argmax(output)
                 if testanswers[k] == pred: 
                     correct[pred] += 1.0
                 else: incorrect[pred] += 1.0
-                #totals[int(testanswers[k])] += 1.0
             measures = np.append(measures,np.expand_dims(cnnStatistics(correct[1],incorrect[0],incorrect[1],correct[0]),axis=0),axis=0)
-            #cd_rate = np.append(cd_rate,np.expand_dims(correct/totals,axis=0),axis=0)
-            #fp_rate = np.append(fp_rate,np.expand_dims(incorrect/totals,axis=0),axis=0)
             
-                #converged = np.all(np.std(cd_rate[-5:,:],axis=0) < sensitivity) #if the standard deviation of the last 5 CDs is less than sens for each class
-           # print('Model {:s} is on epoch {:d} with statistics:\nACC={:.2f}\nPOD={:.2f}\nCSI={:.2f}\nFAR={:.2f}\nHSS={:.2f}\nTSS={:.2f}'.format(fname,epoch+1,measures[-1,0],measures[-1,1],measures[-1,2],measures[-1,3],measures[-1,4],measures[-1,5]))
             if epoch>=Niters: done = True
     print('Model {:s} has finished training after {:d} epochs. After convergence:\nACC={:.2f}\nPOD={:.2f}\nCSI={:.2f}\nFAR={:.2f}\nHSS={:.2f}\nTSS={:.2f}'.format(fname,epoch+1,measures[-1,0],measures[-1,1],measures[-1,2],measures[-1,3],measures[-1,4],measures[-1,5]))
-    #for k in range(len(labels)):
-    #    print('  Class {:s} detected with accuracy {:.0f}/{:.0f} ({:.1f}%) and misidentified {:.0f} times'.format(labels[k],correct[k],totals[k],correct[k]/totals[k]*100,incorrect[k]))
     torch.save(net.state_dict(),fname+'.pth')
 
 def cnnStatistics(H,M,F,N):
@@ -194,49 +137,39 @@ def help():
     sys.exit(0)
 
 if __name__ == '__main__':
-    args = sys.argv
-    opts = getOpt(args[1:],['files=','answers=','Nmp=','Nmodels=','Ntrain=','fname=','offset=','randtrain','Niters=','lrn=','mom=','sens=','trainorder=','saveorder=','ratio_tol=','help'])
-    if 'help' in opts: help()
-    if 'files' in opts: files = parseList(opts['files'])
-    else: files = np.arange(12350000,12825000,25000)
-    if 'answers' in opts: answers_name = opts['answers']
-    else: answers_name = 'cnn_loop_classification_rev_3.18.csv'
-    if not answers_name[-4:] =='.csv': answers_name = answers_name + '.csv'
-    if 'Nmp' in opts: Nmp = int(opts['Nmp'])
-    else: Nmp = 24
-    if 'Nmodels' in opts: Nmodels = int(opts['Nmodels'])
-    else: Nmodels = 24
-    if 'fname' in opts: fname = opts['fname']
-    else: fname = 'default_rev3'
-    if 'offset' in opts: offset = int(opts['offset'])
-    else: offset = 0
-    if 'Ntrain' in opts: Ntrain = int(opts['Ntrain'])
-    else: Ntrain = 1500
-    randtrain = 'randtrain' in opts
-    if 'Niters' in opts: Niters = int(opts['Niters'])
-    else: Niters = None
-    if 'lrn' in opts: lrn = float(opts['lrn'])
-    else: lrn = .0005
-    if 'mom' in opts: mom = float(opts['mom'])
-    else: mom = 0.5
-    if 'sens' in opts: sens = float(opts['sens'])
-    else: sens = 0.01
-    if 'trainorder' in opts: trainorder = np.load(opts['trainorder'])
+    import loopnet_config
+    files = [int(x) for x in parseList(config['FILE_NUMBERS'])]
+    answers_name = config['IDNET_TRAINING_ANSWERS_FILE']
+    datadir = config['FIELD_LINES_PATH']
+    data_pref = config['FIELD_LINES_PREFIX']
+    savedir = config['IDNET_TRAINING_PATH']
+    Nmp = config['MULTITHREADING_NUM_PROCESSORS']
+    Nmodels = config['IDNET_TRAINING_NUM_MODEL']
+    fname = config['IDNET_TRAINING_PREFIX']
+    netdir = config['IDNET_TRAINING_PATH']
+    offset = config['IDNET_TRAINING_OFFSET']
+    Ntrain = config['IDNET_TRAINING_TESTING_SPLIT']
+    randtrain = config['IDNET_TRAINING_SPLIT_NAME'] is None
+    Niters = config['IDNET_TRAINING_NUM_EPOCH']
+    lrn = config['IDNET_TRAINING_LEARN_RATE']
+    mom = config['IDNET_TRAINING_MOMENTUM']
+    sens = config['IDNET_TRAINING_SENSITIVITY']
+    if config['IDNET_TRAINING_SPLIT_NAME']: trainorder = np.load(config[savedir+'IDNET_TRAINING_SPLIT_NAME'])
     else: trainorder = None
-    if 'saveorder' in opts: saveorder = opts['saveorder']
-    else: saveorder = None
-    if 'ratio_tol' in opts: rtol = float(opts['ratio_tol'])
-    else: rtol = 0.01
+    saveorder = config['IDNET_TRAINING_SPLIT_NAMING']
+    trainorder_pref = config['IDNET_TRAINING_SPLIT_PREFIX']
+    rtol = config['IDNET_TRAINING_SPLIT_TOLERANCE']
 
-    data = cnn.compileData(['loop_training_data_f{:08d}.npy'.format(d) for d in files])
+    data = cnn.compileData(['{:s}{:s}_f{:08d}.npy'.format(datadir,data_pref,d) for d in files])
+    Ntrain = int(np.floor(Ntrain*np.shape(data)[0]))
     answers = cnn.compileAnswers(answers_name)
     for k in range(int(np.ceil(Nmodels/Nmp))):
-        if saveorder == 'batch': savename = 'training_order_{:s}_{:03d}-{:03d}'.format(fname,k*Nmp+offset,(k+1)*Nmp+offset-1)
-        else: savename = 'training_order_{:s}'.format(saveorder)
+        if saveorder == 'batch': savename = '{:s}_{:s}_{:03d}-{:03d}'.format(trainorder_pref,fname,k*Nmp+offset,(k+1)*Nmp+offset-1)
+        else: savename = '{:s}_{:s}'.format(trainorder_pref,saveorder)
         trd,tra,ted,tea = partitionData(data,answers,Ntrain=Ntrain,randomize=randtrain,trainorder=trainorder,saveorder=savename,ratio_tolerance=rtol)
         jobs = []
         for j in range(Nmp):
-            thisname = 'loop_net_{:s}_{:03d}'.format(fname,k*Nmp+j+offset)
+            thisname = '{:s}{:s}_{:03d}'.format(netdir,fname,k*Nmp+j+offset)
             if Niters is None: p = mp.Process(target=convergingTraining, args=(trd,tra,ted,tea,thisname,lrn,mom,sens))
             else: p = mp.Process(target=finiteTraining, args=(trd,tra,ted,tea,thisname,Niters,lrn,mom))
             jobs.append(p)

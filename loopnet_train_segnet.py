@@ -8,7 +8,8 @@ import torch.optim as optim
 import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-import iso_wcnn_v2 as cnn
+import loopnet_segnet as cnn
+import loopnet_idnet as idn
 import time
 import random
 import os
@@ -38,7 +39,7 @@ def finiteTraining(rank,data,weights,fname,Niters,lrn,mom,nclass,drop,batch,ngpu
     data = torch.from_numpy(data[dataidx,:,:]).float().cuda(rank)
     weight = weights[dataidx,:,:].cuda(rank)
 
-    torch.random.manual_seed(int(time.time()))#*100+int(fname[-3:]))
+    torch.random.manual_seed(int(time.time()))
     wnet = cnn.WNet(K=nclass,nvar=np.shape(data)[1],dropout=drop).float().cuda(rank)
     wnet = nn.parallel.DistributedDataParallel(wnet, device_ids=[rank], find_unused_parameters=True)
 
@@ -102,59 +103,46 @@ def help():
     sys.exit(0)
 
 if __name__ == '__main__':
-    args = sys.argv
-    opts = getOpt(args[1:],['files=','Nmp=','Nmodels=','exclude=','fname=','offset=','Niters=','lrn=','mom=','nclass=','dropout=','batchsize=','taperE=','taperV=','idnthresh=','ngpu=','nmodel=','alldata','verbose','help'])
-    if 'help' in opts: help()
-    if 'files' in opts: files = [int(x) for x in parseList(opts['files'])]
-    else: files = np.arange(12350000,12825000,25000,dtype=np.int32)
-    if 'fname' in opts: fname = opts['fname']
-    else: fname = 'default'
-    if 'offset' in opts: offset = int(opts['offset'])
-    else: offset = 0
-    if 'Niters' in opts: Niters = int(opts['Niters'])
-    else: Niters = 1000
-    if 'lrn' in opts: lrn = float(opts['lrn'])
-    else: lrn = .0005
-    if 'mom' in opts: mom = float(opts['mom'])
-    else: mom = 0.25
-    if 'dropout' in opts: dropout = float(opts['dropout'])
-    else: dropout = 0.25
-    if 'nclass' in opts: nclass = [int(x) for x in opts['nclass'].split(',')]
-    else: nclass = [2]
-    if 'taperE' in opts: taper_epoch = int(opts['taperE'])
-    else: taper_epoch = 0
-    if 'taperV' in opts: taper_value = float(opts['taperV'])
-    else: taper_value = 1
-    verbose = 'verbose' in opts
-    if 'idnthresh' in opts: idnthresh = float(opts['idnthresh'])
-    else: idnthresh = 0
-    if 'batchsize' in opts: batchsize = int(opts['batchsize'])
-    else: batchsize = 1
-    if 'ngpu' in opts: ngpu = int(opts['ngpu'])
-    else: ngpu = 1
-    if 'nmodel' in opts: nmodel = int(opts['nmodel'])
-    else: nmodel = 1
-    alldata = 'alldata' in opts
+    import loopnet_config
+    files = [int(x) for x in parseList(config['FILE_NUMBERS'])]
+    fname = config['SEGNET_TRAINING_PREFIX']
+    direc = config['SEGNET_TRAINING_PATH']
+    offset = config['SEGNET_TRAINING_OFFSET']
+    Niters = config['SEGNET_TRAINING_NUM_EPOCH']
+    lrn = config['SEGNET_TRAINING_LEARN_RATE']
+    mom = config['SEGNET_TRAINING_MOMENTUM']
+    dropout = config['SEGNET_TRAINING_DROPOUT']
+    nclass = config['SEGNET_TRAINING_NUM_CLASS']
+    taper_epoch = config['SEGNET_TRAINING_TAPER_EPOCH']
+    taper_value = config['SEGNET_TRAINING_TAPER_VALUE']
+    verbose = config['VERBOSE']
+    idnthresh = config['IDNET_THRESHOLD']
+    batchsize = config['SEGNET_TRAINING_BATCH_SIZE']
+    ngpu = config['MULTITHREADING_NUM_GPU']
+    nmodel = config['SEGNET_TRAINING_NUM_MODEL']
+    datadir = config['FIELD_LINES_PATH']
+    data_pref = config['FIELD_LINES_PREFIX']
 
-    os.environ['MASTER_ADDR'] = '127.0.0.1'
-    os.environ['MASTER_PORT'] = '29500'
+    os.environ['MASTER_ADDR'] = config['MULTITHREADING_HOST_IP']
+    os.environ['MASTER_PORT'] = config['MULTITHREADING_HOST_PORT']
 
-    if 'exclude' in opts: exclude = [int(x) for x in parseList(opts['exclude'])]
-    else: exclude = None
+    exclude = config['SEGNET_EXCLUDE_FEATURES']
+
     tloadstart = time.time()
-    if alldata:
-        data1 = cnn.compileData(['loop_training_data_f{:08d}.npy'.format(d) for d in files],verbose = False,exclude=exclude)
-        data2 = cnn.compileData(['../cnn_interp_loops/loop_interp_data2_f{:08d}.npy'.format(d) for d in np.arange(12350000,12805000,5000)],verbose = False,exclude=exclude)
-        scores1 = np.load('ltd_cnn_scores.npy')
-        scores2 = np.load('lid2_cnn_scores.npy')
-        scores2 = scores2*np.std(scores1[np.where(scores1>0)])/np.std(scores2[np.where(scores2>0)])
-        data = np.append(data1[np.where(scores1>idnthresh)[0],:,:],data2[np.where(scores2>idnthresh)[0],:,:],axis=0)
-    else: 
-        answers_name = 'cnn_loop_isolation.csv'
-        loops,answers = cnn.compileAnswers(answers_name) #just need to pare down the dataset to only lines which contain loops
-        data = cnn.compileData(['loop_training_data_f{:08d}.npy'.format(d) for d in files],loops = loops,verbose = verbose,exclude=exclude)
+    data = cnn.compileData(['{:s}{:s}_f{:08d}.npy'.format(datadir,data_pref,d) for d in files],verbose=False,exclude=exclude)
+    
+    idnet = idn.Net()
+    iddata = idn.compileData(['{:s}{:s}_f{:08d}.npy'.format(datadir,data_pref,d) for d in files],verbose=False,exclude=config['IDNET_EXCLUDE_FEATURES'])
+    idnet.load_state_dict(torch.load(config['IDNET_NAME']))
+    scores = np.zeros(np.shape(data)[0])
+    for k in range(np.shape(data)[0]):
+        output = idnet(torch.from_numpy(np.expand_dims(iddata[k,:,:],axis=0)).float()).detach().numpy()[0]
+        scores[k] = output[1]
+    ididx = np.where(scores>idnthresh)[0]
+    data = data[ididx,:,:]
+
     tloadend = time.time()
-    if verbose: print('Spent {:.2f} minutes loading data'.format((tloadend-tloadstart)/60))
+    if verbose: print('Spent {:.2f} minutes loading and prepping data'.format((tloadend-tloadstart)/60))
 
     tstart = time.time()
     weights = calcWeights(torch.from_numpy(data).float(),5,10,4)
@@ -162,7 +150,7 @@ if __name__ == '__main__':
     if verbose: print('Spent {:.2f} minutes calculating weights'.format((tend-tstart)/60))
 
     for k in range(nmodel):
-        thisname = 'iso_wnet_{:s}_{:03d}'.format(fname,offset+k)
+        thisname = '{:s}{:s}_{:03d}'.format(direc,fname,offset+k)
         tstart = time.time()
         mp.spawn(finiteTraining, nprocs=ngpu, args=(data,weights,thisname,Niters,lrn,mom,nclass[0],dropout,batchsize,ngpu,verbose,taper_epoch,taper_value))
         tend = time.time()

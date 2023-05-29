@@ -7,6 +7,9 @@ from numpy.random import rand,seed
 from diagnostic_reading import ReferenceState
 import multiprocessing as mp
 import time
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 #Calculates a streamline of length s initiated at X0 for the vector field represented by the interpolating functions
 def calcFieldLine(s,nds,X0,fnr,fnt,fnp,mult):
@@ -110,50 +113,22 @@ def determineColors(data,polarity): #data should have shape (nvar x nds+1), and 
             elif polarity[k] == 2: c[k,j,:] = [bimap[0](data[k,j]),bimap[1](data[k,j]),bimap[2](data[k,j])]
     return c #c has shape (nvars x nds x 3)
 
-def help():
-    print('plot_field_lines.py can (and should) be run with a number of options \n')
-    print('--files=   MANDATORY A series of comma and/or colon separated integers which correspond to the desired iterations.\n  eg 100000,20000:10000:250000 \n')
-    print('--fname=   A single string that will be used as a prefix for the output files.\n  Default: field_lines \n')
-    print('--rstar=   The radius of the star youre trying to model in cm.\n  Default: 2.588e10 \n')
-    print('--s=       The maximum length of the calculated field lines, as a multiple of rstar.\n  Default: 1 \n')
-    print('--nds=     The number of iterations to use when integrating the field lines.\n  Default: 200 * s \n')
-    print('--nlines=  The number of field lines to calculate.\n  Default: 100 \n')
-    print('--rbnds=   A comma separated pair of fractional radii bounding the volume to seed field lines in.\n  Default: full domain \n')
-    print('--tbnds=   A comma separated pair of colatitudes in degrees bounding the volume to seed field lines in.\n  Default: full domain \n')
-    print('--pbnds=   A comma separated pair of longitudes in degrees bounding the volume to seed field lines in.\n  Default: full domain \n')
-    print('--order=   Chooses in what direction from seed points to track the field lines.\n  Supported options are fwd, back, and fab\n  Default: fwd\n')
-    print('--norms=  ')
-    print('--help     Who fuckin knows when a code is this spaghetti?\n')
-    sys.exit(0)
-
-def integrateLines(opts,fname):
-    if 'fname' in opts: fname_pref = opts['fname']
-    else: fname_pref = 'loop_interp_data'
-    if 'direc' in opts: direc = opts['direc']
-    else: direc = './'
-    if not direc[-1] == '/': direc = direc + '/'
-    if 'rstar' in opts: rstar = float(opts['rstar'])
-    else: rstar = 2.588e10
-    if 'rbcz' in opts: rbcz = float(opts['rbcz'])
-    else: rbcz = 0
-    if 's' in opts: s = float(opts['s'])*rstar
-    else: s = 2*rstar
-    if 'nds' in opts: nds = int(opts['nds'])
-    else: nds = int(200*s/rstar)-1
-    if 'rbnds' in opts: rbnds = np.array([float(x) for x in opts['rbnds'].split(',')])*rstar
-    else: rbnds = [0,rstar]
-    if 'tbnds' in opts: tbnds = np.array([float(x) for x in opts['tbnds'].split(',')])*np.pi/180.
-    else: tbnds = [0,np.pi] 
-    if 'pbnds' in opts: pbnds = np.array([float(x) for x in opts['pbnds'].split(',')])*np.pi/180.
-    else: pbnds = [0,2*np.pi]
-    if 'nlines' in opts: nlines = int(opts['nlines'])
-    else: nlines = 100
-    if 'order' in opts:
-        if opts['order'] in ['fwd','back','fab']: order=opts['order']
-        else: order='fwd'
-    else: order='fwd'
-    if 'norms' in opts: norms = [float(x) for x in opts['norms'].split(',')]
-    else: norms = [rstar,rstar,5e2,1e4,3e4,3,5]
+def integrateLines(fname,config):
+    fname_pref = config['FIELD_LINES_PREFIX']
+    direc = config['FIELD_LINES_PATH']
+    dir3d = config['SPHERICAL_DATA_PATH']
+    dirfig = config['FIELD_LINES_IMAGES_PATH']
+    rstar = config['STELLAR_RADIUS']
+    s = config['FIELD_LINE_LENGTH']
+    nds = config['FIELD_LINE_INTEGRATION_STEPS']
+    rbnds = config['FIELD_LINE_RADIAL_BOUNDARIES']
+    tbnds = config['FIELD_LINE_COLAT_BOUNDARIES']
+    pbnds = config['FIELD_LINE_LONG_BOUNDARIES']
+    nlines = config['NUM_FIELD_LINES']
+    order = config['FIELD_LINE_INTEGRATION_ORDER']
+    norms = config['FIELD_LINE_INITIAL_NORMS']
+    plotty = config['WRITE_IMAGES']
+    verbose = config['VERBOSE']
 
     ref = ReferenceState()
     Pbar = np.expand_dims(np.expand_dims(ref.pressure[::-1],axis=0),axis=0)
@@ -163,9 +138,9 @@ def integrateLines(opts,fname):
     bimap = buildCMap([-1,0,1],[[0,0,1],[0.7,0.7,0.7],[1,0,0]])
 
     training_data = np.zeros((nlines,10,nds+1))
-    print('Working on file {:s}...'.format(fname))
+    if verbose: print('Working on file {:s}...'.format(fname))
     #Reading the files
-    f = open('Spherical_3D/'+fname+'_grid','rb')
+    f = open(dir3d+fname+'_grid','rb')
     skipbyte = np.fromfile(f,count=1,dtype=np.int32)
     nr = int(np.fromfile(f,count=1,dtype=np.int32))
     skipbyte = np.fromfile(f,count=2,dtype=np.int32)
@@ -183,44 +158,34 @@ def integrateLines(opts,fname):
     f.close()
     nB = nr*nt*nphi
 
-    f = open('Spherical_3D/'+fname+'_0801','rb')
+    f = open(dir3d+fname+'_0801','rb')
     Br = np.fromfile(f,count=nB,dtype=np.float64).reshape(nphi,nt,nr,order='F')[:,::-1,::-1]
     if not overlap_ind is None: Br = np.append(Br[:,:,:overlap_ind],Br[:,:,overlap_ind+1:],axis=2)
     Br = np.append(Br,np.expand_dims(Br[0,:,:],axis=0),axis=0)
     f.close()
-    f = open('Spherical_3D/'+fname+'_0802','rb')
+    f = open(dir3d+fname+'_0802','rb')
     Bt = np.fromfile(f,count=nB,dtype=np.float64).reshape(nphi,nt,nr,order='F')[:,::-1,::-1]
     if not overlap_ind is None: Bt = np.append(Bt[:,:,:overlap_ind],Bt[:,:,overlap_ind+1:],axis=2)
     Bt = np.append(Bt,np.expand_dims(Bt[0,:,:],axis=0),axis=0)
     f.close()
-    f = open('Spherical_3D/'+fname+'_0803','rb')
+    f = open(dir3d+fname+'_0803','rb')
     Bp = np.fromfile(f,count=nB,dtype=np.float64).reshape(nphi,nt,nr,order='F')[:,::-1,::-1]
     if not overlap_ind is None: Bp = np.append(Bp[:,:,:overlap_ind],Bp[:,:,overlap_ind+1:],axis=2)
     Bp = np.append(Bp,np.expand_dims(Bp[0,:,:],axis=0),axis=0)
     f.close()
 
-    f = open('Spherical_3D/'+fname+'_0001','rb')
+    f = open(dir3d+fname+'_0001','rb')
     vr = np.fromfile(f,count=nB,dtype=np.float64).reshape(nphi,nt,nr,order='F')[:,::-1,::-1]
     if not overlap_ind is None: vr = np.append(vr[:,:,:overlap_ind],vr[:,:,overlap_ind+1:],axis=2)
     vr = np.append(vr,np.expand_dims(vr[0,:,:],axis=0),axis=0)
     f.close()
-#    f = open('Spherical_3D/'+fname+'_0002','rb')
-#    vt = np.fromfile(f,count=nB,dtype=np.float64).reshape(nphi,nt,nr,order='F')[:,::-1,::-1]
-#    vt = np.append(vt[:,:,:overlap_ind],vt[:,:,overlap_ind+1:],axis=2)
-#    vt = np.append(vt,np.expand_dims(vt[0,:,:],axis=0),axis=0)
-#    f.close()
-#    f = open('Spherical_3D/'+fname+'_0003','rb')
-#    vp = np.fromfile(f,count=nB,dtype=np.float64).reshape(nphi,nt,nr,order='F')[:,::-1,::-1]
-#    vp = np.append(vp[:,:,:overlap_ind],vp[:,:,overlap_ind+1:],axis=2)
-#    vp = np.append(vp,np.expand_dims(vp[0,:,:],axis=0),axis=0)
-#    f.close()
 
-    f = open('Spherical_3D/'+fname+'_0501','rb')
+    f = open(dir3d+fname+'_0501','rb')
     S = np.fromfile(f,count=nB,dtype=np.float64).reshape(nphi,nt,nr,order='F')[:,::-1,::-1]
     if not overlap_ind is None: S = np.append(S[:,:,:overlap_ind],S[:,:,overlap_ind+1:],axis=2)
     S = np.append(S,np.expand_dims(S[0,:,:],axis=0),axis=0)
     f.close()
-    f = open('Spherical_3D/'+fname+'_0502','rb')   #should we add pbar?
+    f = open(dir3d+fname+'_0502','rb')   
     P = np.fromfile(f,count=nB,dtype=np.float64).reshape(nphi,nt,nr,order='F')[:,::-1,::-1]
     if not overlap_ind is None: P = np.append(P[:,:,:overlap_ind],P[:,:,overlap_ind+1:],axis=2)
     P = np.append(P,np.expand_dims(P[0,:,:],axis=0),axis=0)
@@ -238,8 +203,6 @@ def integrateLines(opts,fname):
     fnp = rgi((phi,theta,r),Bp)
 
     fnvr = rgi((phi,theta,r),vr)
-#    fnvt = rgi((phi,theta,r),vt)
-#    fnvp = rgi((phi,theta,r),vp)
 
     fnS = rgi((phi,theta,r),S)
     fnP = rgi((phi,theta,r),P)
@@ -257,30 +220,26 @@ def integrateLines(opts,fname):
         else: 
             training_data[k,:,:] = computeTrainingData(rs,fnr,fnt,fnp,fnvr,fnS,fnP,norms,nds,r,theta,phi,rstar)
             k += 1
+
+        if plotty:
+            colors = determineColors(training_data[k,5:,:],[2,2,1,2,1])
+            xs = sphToCart(rs)/rstar
+            fig, axs = plt.subplots(5,2,figsize=(6,15),dpi=100,tight_layout=True)
+            for j in range(5):
+                axs[j,0].plot(circlex,circley,'k--')
+                for i in range(nds): axs[j,0].plot(xs[0,i:i+2],xs[1,i:i+2],color=colors[j,i,:])
+                axs[j,0].set_title('Variable {:d} xy-plane'.format(j+2))
+                axs[j,0].axis('equal')
+                axs[j,0].set_axis_off()
+                axs[j,1].plot(circlex,circley,'k--')
+                for i in range(nds): axs[j,1].plot(xs[0,i:i+2],xs[2,i:i+2],color=colors[j,i,:])
+                axs[j,1].set_title('Variable {:d} xz-plane'.format(j+2))
+                axs[j,1].axis('equal')
+                axs[j,1].set_axis_off()
+            plt.savefig('{:s}{:s}_f{:s}_l{:04d}.png'.format(dirfig,fname_pref,fname,k))
+            plt.close('all')
+
     np.save('{:s}{:s}_f{:s}'.format(direc,fname_pref,fname),training_data,allow_pickle=False,fix_imports=False)
-        
-if __name__ == '__main__':
-    #Read and interpret all the arguments
-    args = sys.argv
-    opts = getOpt(args[1:],['fname=','direc=','files=','rstar=','rbcz=','s=','nds=','nlines=','rbnds=','tbnds=','pbnds=','azel=','order=','subs=','norms=','Nmp=','help'])
-    if 'help' in opts: help()
-    if 'files' in opts: file_list = [convertNumber(int(x)) for x in parseList(opts['files'])]
-    else:
-        print('Choose a file, you idiot')
-        file_list = [0]
-    if 'Nmp' in opts: Nmp = int(opts['Nmp'])
-    else: Nmp = 12
-    for k in range(int(np.ceil(len(file_list)/Nmp))):
-        jobs = []
-        for j in range(Nmp):
-            try:
-                p = mp.Process(target=integrateLines, args=(opts,file_list[k*Nmp+j]))
-                jobs.append(p)
-                p.start()
-            except IndexError:
-                print('Process {:d} not started: all jobs assigned.'.format(j))
-        for j in jobs: j.join()
-    print('All jobs completed.')
 
 
 
